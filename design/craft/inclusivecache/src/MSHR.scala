@@ -527,6 +527,13 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   }
 
   when (io.allocate.valid) {
+    val cycle = freechips.rocketchip.util.WideCounter(32).value
+    val req = io.allocate.bits
+    chisel3.printf("{source:MSHR_alloc,cycle:%d,prio:0b%b,control:%d,prefetch:%d,opcode:%d,param:%d,size:%d,source:%d,tag:0x%x,offset:0x%x,put:%d}\n",
+      cycle, Cat(req.prio), req.control, req.prefetch, req.opcode, req.param, req.size, req.source, req.tag, req.offset, req.put)
+  }
+
+  when (io.allocate.valid) {
     assert (!request_valid || (no_wait && io.schedule.fire()))
     request_valid := Bool(true)
     request := io.allocate.bits
@@ -595,6 +602,32 @@ class MSHR(params: InclusiveCacheParameters) extends Module
           w_rprobeacklast := Bool(false)
         }
       }
+    }
+    // For internal prefetch requests
+    .elsewhen (new_request.prefetch) {
+      // Do we need an eviction?
+      when (!new_meta.hit && new_meta.state =/= INVALID) {
+        s_release := false.B
+        w_releaseack := false.B
+        // Do we need to shoot-down inner caches?
+        when (!params.firstLevel.B && new_meta.clients =/= 0.U) {
+          s_rprobe := false.B
+          w_rprobeackfirst := false.B
+          w_rprobeacklast := false.B
+        }
+      }
+      // Do we need an acquire?
+      when (!new_meta.hit || (new_meta.state === BRANCH && new_needT)) {
+        s_acquire := false.B
+        w_grantfirst := false.B
+        w_grantlast := false.B
+        w_grant := false.B
+        s_grantack := false.B
+        s_writeback := false.B
+      }
+      // We don't probe inner caches for internal prefetch, but only make sure
+      // that the requested block is either in this cache or in inner caches,
+      // regardless of its state.
     }
     // For A channel requests
     .otherwise { // new_request.prio(0) && !new_request.control
