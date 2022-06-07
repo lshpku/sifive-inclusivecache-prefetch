@@ -66,6 +66,7 @@ class Scheduler(params: InclusiveCacheParameters) extends Module
   val directory = Module(new Directory(params))
   val bankedStore = Module(new BankedStore(params))
   val requests = Module(new ListBuffer(ListBufferParameters(new QueuedRequest(params), 3*params.mshrs, params.secondary, false)))
+  val prefetcher = Module(new Prefetcher(params))
   val mshrs = Seq.fill(params.mshrs) { Module(new MSHR(params)) }
   val abc_mshrs = mshrs.init.init
   val bc_mshr = mshrs.init.last
@@ -115,7 +116,7 @@ class Scheduler(params: InclusiveCacheParameters) extends Module
   // Round-robin arbitration of MSHRs
   val robin_filter = RegInit(UInt(0, width = params.mshrs))
   val robin_request = Cat(mshr_request, mshr_request & robin_filter)
-  val mshr_selectOH2 = ~(leftOR(robin_request) << 1) & robin_request
+  val mshr_selectOH2: UInt = ~(leftOR(robin_request) << 1) & robin_request
   val mshr_selectOH = mshr_selectOH2(2*params.mshrs-1, params.mshrs) | mshr_selectOH2(params.mshrs-1, 0)
   val mshr_select = OHToUInt(mshr_selectOH)
   val schedule = Mux1H(mshr_selectOH, mshrs.map(_.io.schedule.bits))
@@ -150,12 +151,15 @@ class Scheduler(params: InclusiveCacheParameters) extends Module
 
   // Pick highest priority request
   val request = Wire(Decoupled(new FullRequest(params)))
-  request.valid := directory.io.ready && (sinkA.io.req.valid || sinkX.io.req.valid || sinkC.io.req.valid)
+  val apArb = Module(new Arbiter(new FullRequest(params), 2))
+  apArb.io.in(0) <> sinkA.io.req
+  apArb.io.in(1) <> prefetcher.io.req
+  request.valid := directory.io.ready && (apArb.io.out.valid || sinkX.io.req.valid || sinkC.io.req.valid)
   request.bits := Mux(sinkC.io.req.valid, sinkC.io.req.bits,
-                  Mux(sinkX.io.req.valid, sinkX.io.req.bits, sinkA.io.req.bits))
+                  Mux(sinkX.io.req.valid, sinkX.io.req.bits, apArb.io.out.bits))
   sinkC.io.req.ready := directory.io.ready && request.ready
   sinkX.io.req.ready := directory.io.ready && request.ready && !sinkC.io.req.valid
-  sinkA.io.req.ready := directory.io.ready && request.ready && !sinkC.io.req.valid && !sinkX.io.req.valid
+  apArb.io.out.ready := directory.io.ready && request.ready && !sinkC.io.req.valid && !sinkX.io.req.valid
 
   // If no MSHR has been assigned to this set, we need to allocate one
   val setMatches = Cat(mshrs.map { m => m.io.status.valid && m.io.status.bits.set === request.bits.set }.reverse)
@@ -264,7 +268,7 @@ class Scheduler(params: InclusiveCacheParameters) extends Module
       OHToUInt(lowerMatches1 << params.mshrs*1),
       OHToUInt(lowerMatches1 << params.mshrs*2)))
 
-  val mshr_insertOH = ~(leftOR(~mshr_validOH) << 1) & ~mshr_validOH & prioFilter
+  val mshr_insertOH: UInt = ~(leftOR(~mshr_validOH) << 1) & ~mshr_validOH & prioFilter
   (mshr_insertOH.asBools zip mshrs) map { case (s, m) =>
     when (request.valid && alloc && s && !mshr_uses_directory_assuming_no_bypass) {
       m.io.allocate.valid := Bool(true)
@@ -298,6 +302,10 @@ class Scheduler(params: InclusiveCacheParameters) extends Module
     m.io.directory.valid := directoryFanout(i)
     m.io.directory.bits := directory.io.result.bits
   }
+
+  // Pass miss to prefetcher
+  prefetcher.io.train.valid := false.B
+  prefetcher.io.train.bits := chisel3.DontCare
 
   // MSHR response meta-data fetch
   sinkC.io.way :=
