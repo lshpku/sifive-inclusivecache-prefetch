@@ -33,6 +33,7 @@ class Scheduler(params: InclusiveCacheParameters) extends Module
     // Control port
     val req = Decoupled(new SinkXRequest(params)).flip
     val resp = Decoupled(new SourceXRequest(params))
+    val prefetch = Decoupled(UInt(64.W)).flip
   }
 
   val sourceA = Module(new SourceA(params))
@@ -306,6 +307,7 @@ class Scheduler(params: InclusiveCacheParameters) extends Module
   // Pass miss to prefetcher
   prefetcher.io.train.valid := false.B
   prefetcher.io.train.bits := chisel3.DontCare
+  prefetcher.io.ctl <> io.prefetch
 
   // MSHR response meta-data fetch
   sinkC.io.way :=
