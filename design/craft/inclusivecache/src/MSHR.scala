@@ -190,6 +190,34 @@ class MSHR(params: InclusiveCacheParameters) extends Module
                        io.schedule.bits.d.valid || io.schedule.bits.e.valid || io.schedule.bits.x.valid ||
                        io.schedule.bits.dir.valid
 
+  val cycle = freechips.rocketchip.util.WideCounter(32).value
+  def log_simple_event(event: String) = {
+    printf(s"{event:$event,cycle:%d,tag:0x%x,set:0x%x}\n", cycle, request.tag, request.set)
+  }
+
+  when (io.schedule.fire) {
+    val cycle = freechips.rocketchip.util.WideCounter(32).value
+    when (io.schedule.bits.a.valid) {
+      val a = io.schedule.bits.a.bits
+      printf("{event:MSHR.schedule.a,cycle:%d,tag:0x%x,set:0x%x,param:%d,source:%d,block:%d}\n",
+        cycle, a.tag, a.set, a.param, a.source, a.block)
+    }
+    when (io.schedule.bits.b.valid) { log_simple_event("MSHR.schedule.b") }
+    when (io.schedule.bits.c.valid) { log_simple_event("MSHR.schedule.c") }
+    when (io.schedule.bits.d.valid) {
+      val d = io.schedule.bits.d.bits
+      printf("{event:MSHR.schedule.d,cycle:%d,tag:0x%x,set:0x%x,way:%d,opcode:%d,param:%d,source:%d,sink:%d}\n",
+        cycle, d.tag, d.set, d.way, d.opcode, d.param, d.source, d.sink)
+    }
+    when (io.schedule.bits.e.valid) { log_simple_event("MSHR.schedule.e") }
+    when (io.schedule.bits.x.valid) { log_simple_event("MSHR.schedule.x") }
+    when (io.schedule.bits.dir.valid) {
+      val dir = io.schedule.bits.dir.bits
+      printf("{event:MSHR.schedule.dir,cycle:%d,tag:0x%x,set:0x%x,way:%d,dirty:%d,state:%d,clients:0b%b}\n",
+        cycle, dir.data.tag, dir.set, dir.way, dir.data.dirty, dir.data.state, dir.data.clients)
+    }
+  }
+
   // Schedule completions
   when (io.schedule.ready) {
                                     s_rprobe     := Bool(true)
@@ -205,6 +233,17 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     when (no_wait) {
       request_valid := Bool(false)
       meta_valid := Bool(false)
+      log_simple_event("MSHR.no_wait")
+    }
+  }
+
+  // Prefetch may not create a schedule. In this case, io.schedule.ready
+  // will never be true, so we must handle it seperately.
+  when (request_valid && request.prefetch) {
+    when (no_wait) {
+      request_valid := false.B
+      meta_valid := false.B
+      log_simple_event("MSHR.prefetch.no_wait")
     }
   }
 
@@ -529,8 +568,10 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   when (io.allocate.valid) {
     val cycle = freechips.rocketchip.util.WideCounter(32).value
     val req = io.allocate.bits
-    chisel3.printf("{source:MSHR_alloc,cycle:%d,prio:0b%b,control:%d,prefetch:%d,opcode:%d,param:%d,size:%d,source:%d,tag:0x%x,offset:0x%x,put:%d}\n",
-      cycle, Cat(req.prio), req.control, req.prefetch, req.opcode, req.param, req.size, req.source, req.tag, req.offset, req.put)
+    printf("{event:MSHR.allocate,cycle:%d,prio:0b%b,control:%d,prefetch:%d," +
+      "opcode:%d,param:%d,size:%d,source:%d,tag:0x%x,set:0x%x,offset:0x%x,put:%d}\n",
+      cycle, Cat(req.prio), req.control, req.prefetch,
+      req.opcode, req.param, req.size, req.source, req.tag, req.set, req.offset, req.put)
   }
 
   when (io.allocate.valid) {
