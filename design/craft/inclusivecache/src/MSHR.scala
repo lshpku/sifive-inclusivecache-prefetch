@@ -132,6 +132,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   val s_probeack       = RegInit(Bool(true)) // C  w_pprobeackfirst (mutually exclusive with next two s_*)
   val s_grantack       = RegInit(Bool(true)) // E  w_grantfirst ... CAN require both outE&inD to service outD
   val s_execute        = RegInit(Bool(true)) // D  w_pprobeack, w_grant
+  val s_prefetch       = RegInit(Bool(true))
   val w_grantack       = RegInit(Bool(true))
   val s_writeback      = RegInit(Bool(true)) // W  w_*
 
@@ -237,10 +238,12 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     }
   }
 
-  // Prefetch may not create a schedule. In this case, io.schedule.ready
-  // will never be true, so we must handle it seperately.
-  when (request_valid && request.prefetch) {
+  // s_prefetch doesn't create a schedule. When s_prefetch is the only
+  // transition, io.schedule.ready will never be true, so we must handle
+  // this case seperately.
+  when (!s_prefetch) {
     when (no_wait) {
+      s_prefetch := true.B
       request_valid := false.B
       meta_valid := false.B
       log_simple_event("MSHR.prefetch.no_wait")
@@ -609,6 +612,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     s_probeack       := Bool(true)
     s_grantack       := Bool(true)
     s_execute        := Bool(true)
+    s_prefetch       := Bool(true)
     w_grantack       := Bool(true)
     s_writeback      := Bool(true)
 
@@ -646,6 +650,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     }
     // For internal prefetch requests
     .elsewhen (new_request.prefetch) {
+      s_prefetch := false.B
       // Do we need an eviction?
       when (!new_meta.hit && new_meta.state =/= INVALID) {
         s_release := false.B
