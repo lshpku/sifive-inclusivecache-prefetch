@@ -171,17 +171,27 @@ class InclusiveCache(
     val prefetchOutValid = RegInit(false.B)
     val prefetchOutReady = Wire(init = false.B)
     val prefetchInAddress = Reg(UInt(64.W))
+    val prefetchInTrunk = Reg(Bool())
 
     when (prefetchOutReady) { prefetchOutValid := false.B }
     when (prefetchInReady) { prefetchInValid := false.B }
     when (prefetchInValid) { prefetchOutValid := true.B }
 
-    val prefetch64 = RegField.w(64, RegWriteFn((ivalid, oready, data) => {
+    def prefetch_fn(trunk: Boolean) = RegWriteFn((ivalid, oready, data) => {
       when (oready) { prefetchOutReady := true.B }
       when (ivalid) { prefetchInValid := true.B }
-      when (ivalid && !prefetchInValid) { prefetchInAddress := data }
+      when (ivalid && !prefetchInValid) {
+        prefetchInAddress := data
+        prefetchInTrunk := trunk.B
+      }
       (!prefetchInValid, prefetchOutValid)
-    }), RegFieldDesc("Prefetch64", "Prefetch the phsyical address equal to the 64-bit written data into the cache"))
+    })
+
+    val prefetchRead64 = RegField.w(64, prefetch_fn(false))
+    val prefetchWrite64 = RegField.w(64, prefetch_fn(true))
+
+    val enablePrefetchingReg = Reg(UInt(1.W))
+    val enablePrefetching = RegField(64, enablePrefetchingReg)
 
     // Information about the cache configuration
     val banksR  = RegField.r(8, UInt(node.edges.in.size),               RegFieldDesc("Banks",
@@ -198,7 +208,7 @@ class InclusiveCache(
         0x000 -> RegFieldGroup("Config", Some("Information about the Cache Configuration"), Seq(banksR, waysR, lgSetsR, lgBlockBytesR)),
         0x200 -> (if (control.get.beatBytes >= 8) Seq(flush64) else Seq()),
         0x240 -> Seq(flush32),
-        0x400 -> Seq(prefetch64)
+        0x400 -> Seq(prefetchRead64, prefetchWrite64, enablePrefetching)
       )
     }
 
@@ -230,9 +240,11 @@ class InclusiveCache(
       scheduler.io.req.bits.address := flushInAddress
       scheduler.io.resp.ready := !flushOutValid
 
-      scheduler.io.prefetch.valid := prefetchInValid
-      scheduler.io.prefetch.bits := prefetchInAddress
-      prefetchInReady := scheduler.io.prefetch.ready
+      scheduler.io.prefetch.req.valid := prefetchInValid
+      scheduler.io.prefetch.req.bits.address := prefetchInAddress
+      scheduler.io.prefetch.req.bits.trunk := prefetchInTrunk
+      scheduler.io.prefetch.enable := enablePrefetchingReg === 1.U
+      prefetchInReady := scheduler.io.prefetch.req.ready
 
       // Fix-up the missing addresses. We do this here so that the Scheduler can be
       // deduplicated by Firrtl to make hierarchical place-and-route easier.

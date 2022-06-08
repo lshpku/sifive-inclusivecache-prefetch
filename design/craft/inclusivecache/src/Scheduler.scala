@@ -33,7 +33,7 @@ class Scheduler(params: InclusiveCacheParameters) extends Module
     // Control port
     val req = Decoupled(new SinkXRequest(params)).flip
     val resp = Decoupled(new SourceXRequest(params))
-    val prefetch = Decoupled(UInt(64.W)).flip
+    val prefetch = new PrefetcherCtl(params).flip
   }
 
   val sourceA = Module(new SourceA(params))
