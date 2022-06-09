@@ -255,6 +255,17 @@ class Scheduler(params: InclusiveCacheParameters) extends Module
   request.ready := request_alloc_cases || (queue && (bypassQueue || requests.io.push.ready))
   val alloc_uses_directory = request.valid && request_alloc_cases
 
+  when (request.fire) {
+    val cycle = freechips.rocketchip.util.WideCounter(32).value
+    val req = request.bits
+    printf("{event:Scheduler.request.fire,cycle:%d,prio:0b%b,control:%d,prefetch:%d," +
+      "opcode:%d,param:%d,size:%d,source:%d,tag:0x%x,set:0x%x,offset:0x%x,put:%d," +
+      "alloc:%d,bypass:%d,queue:%d}\n",
+      cycle, Cat(req.prio), req.control, req.prefetch,
+      req.opcode, req.param, req.size, req.source, req.tag, req.set, req.offset, req.put,
+      request_alloc_cases, queue && bypassQueue, queue && requests.io.push.ready)
+  }
+
   // When a request goes through, it will need to hit the Directory
   directory.io.read.valid := mshr_uses_directory || alloc_uses_directory
   directory.io.read.bits.set := Mux(mshr_uses_directory_for_lb, scheduleSet,          request.bits.set)
@@ -304,9 +315,12 @@ class Scheduler(params: InclusiveCacheParameters) extends Module
     m.io.directory.bits := directory.io.result.bits
   }
 
-  // Pass miss to prefetcher
-  prefetcher.io.train.valid := false.B
+  // Send A channel schedule to prefetcher
+  val inner_miss = schedule.a.valid && !schedule.prefetch
+  prefetcher.io.train.valid := inner_miss
   prefetcher.io.train.bits := chisel3.DontCare
+  prefetcher.io.train.bits.tag := schedule.a.bits.tag
+  prefetcher.io.train.bits.set := schedule.a.bits.set
   prefetcher.io.ctl <> io.prefetch
 
   // MSHR response meta-data fetch

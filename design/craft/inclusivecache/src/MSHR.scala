@@ -33,6 +33,7 @@ class ScheduleRequest(params: InclusiveCacheParameters) extends InclusiveCacheBu
   val e = Valid(new SourceERequest(params))
   val x = Valid(new SourceXRequest(params))
   val dir = Valid(new DirectoryWrite(params))
+  val prefetch = Bool() // this request is a prefetch
   val reload = Bool() // get next request via allocate (if any)
 }
 
@@ -186,6 +187,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   io.schedule.bits.e.valid := !s_grantack && w_grantfirst
   io.schedule.bits.x.valid := !s_flush && w_releaseack
   io.schedule.bits.dir.valid := (!s_release && w_rprobeackfirst) || (!s_writeback && no_wait)
+  io.schedule.bits.prefetch := !s_prefetch
   io.schedule.bits.reload := no_wait
   io.schedule.valid := io.schedule.bits.a.valid || io.schedule.bits.b.valid || io.schedule.bits.c.valid ||
                        io.schedule.bits.d.valid || io.schedule.bits.e.valid || io.schedule.bits.x.valid ||
@@ -229,6 +231,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     when (w_pprobeackfirst)       { s_probeack   := Bool(true) }
     when (w_grantfirst)           { s_grantack   := Bool(true) }
     when (w_pprobeack && w_grant) { s_execute    := Bool(true) }
+    when (w_grant)                { s_prefetch   := Bool(true) }
     when (no_wait)                { s_writeback  := Bool(true) }
     // Await the next operation
     when (no_wait) {
@@ -241,13 +244,11 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // s_prefetch doesn't create a schedule. When s_prefetch is the only
   // transition, io.schedule.ready will never be true, so we must handle
   // this case seperately.
-  when (!s_prefetch) {
-    when (no_wait) {
-      s_prefetch := true.B
-      request_valid := false.B
-      meta_valid := false.B
-      log_simple_event("MSHR.prefetch.no_wait")
-    }
+  when (!s_prefetch && s_writeback) {
+    s_prefetch := true.B
+    request_valid := false.B
+    meta_valid := false.B
+    log_simple_event("MSHR.prefetch.no_wait")
   }
 
   // Resulting meta-data

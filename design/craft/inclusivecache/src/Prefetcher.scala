@@ -56,6 +56,10 @@ class Prefetcher(params: InclusiveCacheParameters) extends Module
     printf("{event:Prefetcher.ctl,cycle:%d,address:0x%x,tag:0x%x,set:0x%x}\n",
       cycle, io.ctl.req.bits.address, io.req.bits.tag, io.req.bits.set)
   }
+  when (io.ctl.req.valid && !io.ctl.req.ready) {
+    printf("{event:Prefetcher.ctl.blocked,cycle:%d,address:0x%x,tag:0x%x,set:0x%x}\n",
+      cycle, io.ctl.req.bits.address, io.req.bits.tag, io.req.bits.set)
+  }
 
   val pred_req = make_req()
   val pred_valid = RegInit(false.B)
@@ -64,8 +68,8 @@ class Prefetcher(params: InclusiveCacheParameters) extends Module
 
   val pred_addr = Reg(UInt(params.inner.bundle.addressBits.W))
   val (pred_tag, pred_set, _) = params.parseAddress(pred_addr)
-  ctl_req.tag := ctl_tag
-  ctl_req.set := ctl_set
+  pred_req.tag := pred_tag
+  pred_req.set := pred_set
 
   val miss_addr = params.expandAddress(io.train.bits.tag, io.train.bits.set, 0.U)
   val next_addr = miss_addr + params.cache.blockBytes.U
