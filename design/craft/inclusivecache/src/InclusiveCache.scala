@@ -190,7 +190,7 @@ class InclusiveCache(
     val prefetchRead64 = RegField.w(64, prefetch_fn(false))
     val prefetchWrite64 = RegField.w(64, prefetch_fn(true))
 
-    val enablePrefetchingReg = Reg(UInt(1.W))
+    val enablePrefetchingReg = RegInit(0.U(1.W))
     val enablePrefetching = RegField(64, enablePrefetchingReg)
 
     // Information about the cache configuration
