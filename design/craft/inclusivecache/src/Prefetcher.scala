@@ -4,7 +4,8 @@ import chisel3._
 import chisel3.util._
 import freechips.rocketchip.tilelink._
 
-class PrefetcherCtl(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params) {
+class PrefetchCtl(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params)
+{
   val req = Decoupled(new Bundle{
     val address = UInt(params.inner.bundle.addressBits.W)
     val trunk = Bool()
@@ -12,17 +13,30 @@ class PrefetcherCtl(params: InclusiveCacheParameters) extends InclusiveCacheBund
   val enable = Bool()
 }
 
+class PrefetchTrain(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params)
+{
+  val tag = UInt(params.tagBits.W)
+  val set = UInt(params.setBits.W)
+}
+
+class PrefetcherResp(params: InclusiveCacheParameters) extends PrefetchTrain(params)
+{
+}
+
 class Prefetcher(params: InclusiveCacheParameters) extends Module
 {
   val io = IO(new Bundle {
-    val train = Flipped(Decoupled(new FullRequest(params)))
+    val train = Flipped(Decoupled(new PrefetchTrain(params)))
     val req = Decoupled(new FullRequest(params))
-    val ctl = Flipped(new PrefetcherCtl(params))
+    val resp = Flipped(Decoupled(new PrefetcherResp(params)))
+    val ctl = Flipped(new PrefetchCtl(params))
   })
+
+  io.train.ready := true.B
+  io.resp.ready := true.B
 
   val reqArb = Module(new Arbiter(new FullRequest(params), 2))
   io.req <> reqArb.io.out
-  io.train.ready := true.B
   io.ctl.req.ready := reqArb.io.in(0).ready
 
   def make_req() = {
