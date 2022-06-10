@@ -33,7 +33,10 @@ class ScheduleRequest(params: InclusiveCacheParameters) extends InclusiveCacheBu
   val e = Valid(new SourceERequest(params))
   val x = Valid(new SourceXRequest(params))
   val dir = Valid(new DirectoryWrite(params))
-  val prefetch = Bool() // this request is a prefetch
+  val prefetch = new Bundle {
+    val train = Valid(new PrefetchTrain(params))
+    val resp = Valid(new PrefetcherResp(params))
+  }
   val reload = Bool() // get next request via allocate (if any)
 }
 
@@ -133,7 +136,8 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   val s_probeack       = RegInit(Bool(true)) // C  w_pprobeackfirst (mutually exclusive with next two s_*)
   val s_grantack       = RegInit(Bool(true)) // E  w_grantfirst ... CAN require both outE&inD to service outD
   val s_execute        = RegInit(Bool(true)) // D  w_pprobeack, w_grant
-  val s_prefetch       = RegInit(Bool(true))
+  val s_prefetch_resp  = RegInit(Bool(true)) // receive prefetch data  ; depends on w_grant
+  val s_prefetch_train = RegInit(Bool(true)) // send miss to prefetcher; depends on nothing
   val w_grantack       = RegInit(Bool(true))
   val s_writeback      = RegInit(Bool(true)) // W  w_*
 
@@ -187,11 +191,13 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   io.schedule.bits.e.valid := !s_grantack && w_grantfirst
   io.schedule.bits.x.valid := !s_flush && w_releaseack
   io.schedule.bits.dir.valid := (!s_release && w_rprobeackfirst) || (!s_writeback && no_wait)
-  io.schedule.bits.prefetch := !s_prefetch
+  io.schedule.bits.prefetch.train.valid := !s_prefetch_train
+  io.schedule.bits.prefetch.resp.valid := !s_prefetch_resp && w_grant
   io.schedule.bits.reload := no_wait
   io.schedule.valid := io.schedule.bits.a.valid || io.schedule.bits.b.valid || io.schedule.bits.c.valid ||
                        io.schedule.bits.d.valid || io.schedule.bits.e.valid || io.schedule.bits.x.valid ||
-                       io.schedule.bits.dir.valid
+                       io.schedule.bits.dir.valid ||
+                       io.schedule.bits.prefetch.train.valid || io.schedule.bits.prefetch.resp.valid
 
   val cycle = freechips.rocketchip.util.WideCounter(32).value
   def log_simple_event(event: String) = {
@@ -216,8 +222,8 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     when (io.schedule.bits.x.valid) { log_simple_event("MSHR.schedule.x") }
     when (io.schedule.bits.dir.valid) {
       val dir = io.schedule.bits.dir.bits
-      printf("{event:MSHR.schedule.dir,cycle:%d,tag:0x%x,set:0x%x,way:%d,dirty:%d,state:%d,clients:0b%b}\n",
-        cycle, dir.data.tag, dir.set, dir.way, dir.data.dirty, dir.data.state, dir.data.clients)
+      printf("{event:MSHR.schedule.dir,cycle:%d,tag:0x%x,set:0x%x,way:%d,dirty:%d,state:%d,clients:0b%b,prefetch:%d}\n",
+        cycle, dir.data.tag, dir.set, dir.way, dir.data.dirty, dir.data.state, dir.data.clients, dir.data.prefetch)
     }
   }
 
@@ -231,7 +237,8 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     when (w_pprobeackfirst)       { s_probeack   := Bool(true) }
     when (w_grantfirst)           { s_grantack   := Bool(true) }
     when (w_pprobeack && w_grant) { s_execute    := Bool(true) }
-    when (w_grant)                { s_prefetch   := Bool(true) }
+    when (w_grant)                { s_prefetch_resp  := true.B }
+                                    s_prefetch_train := true.B
     when (no_wait)                { s_writeback  := Bool(true) }
     // Await the next operation
     when (no_wait) {
@@ -239,16 +246,6 @@ class MSHR(params: InclusiveCacheParameters) extends Module
       meta_valid := Bool(false)
       log_simple_event("MSHR.no_wait")
     }
-  }
-
-  // s_prefetch doesn't create a schedule. When s_prefetch is the only
-  // transition, io.schedule.ready will never be true, so we must handle
-  // this case seperately.
-  when (!s_prefetch && s_writeback) {
-    s_prefetch := true.B
-    request_valid := false.B
-    meta_valid := false.B
-    log_simple_event("MSHR.prefetch.no_wait")
   }
 
   // Resulting meta-data
@@ -286,6 +283,9 @@ class MSHR(params: InclusiveCacheParameters) extends Module
                                     Mux(req_acquire, req_clientBit, UInt(0))
     final_meta_writeback.tag := request.tag
     final_meta_writeback.hit := Bool(true)
+    // meta.prefetch should always be cleared after a request, unless
+    // the request is a prefetch request.
+    final_meta_writeback.prefetch := request.prefetch
   }
 
   when (bad_grant) {
@@ -348,6 +348,9 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   io.schedule.bits.dir.bits.set   := request.set
   io.schedule.bits.dir.bits.way   := meta.way
   io.schedule.bits.dir.bits.data  := Mux(!s_release, invalid, Wire(new DirectoryEntry(params), init = final_meta_writeback))
+  // We get tag & set from request no matter it's a miss or prefetch hit
+  io.schedule.bits.prefetch.train.bits.tag := request.tag
+  io.schedule.bits.prefetch.train.bits.set := request.set
 
   // Coverage of state transitions
   def cacheState(entry: DirectoryEntry, hit: Bool) = {
@@ -613,7 +616,8 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     s_probeack       := Bool(true)
     s_grantack       := Bool(true)
     s_execute        := Bool(true)
-    s_prefetch       := Bool(true)
+    s_prefetch_resp  := Bool(true)
+    s_prefetch_train := Bool(true)
     w_grantack       := Bool(true)
     s_writeback      := Bool(true)
 
@@ -649,9 +653,9 @@ class MSHR(params: InclusiveCacheParameters) extends Module
         }
       }
     }
-    // For internal prefetch requests
+    // For prefetch requests
     .elsewhen (new_request.prefetch) {
-      s_prefetch := false.B
+      s_prefetch_resp := false.B
       // Do we need an eviction?
       when (!new_meta.hit && new_meta.state =/= INVALID) {
         s_release := false.B
@@ -717,6 +721,18 @@ class MSHR(params: InclusiveCacheParameters) extends Module
       // Becomes dirty?
       when (!new_request.opcode(2) && new_meta.hit && !new_meta.dirty) {
         s_writeback := Bool(false)
+      }
+      // Can we train the prefetcher?
+      // 1) It's a data miss (we don't consider permission miss).
+      when (!new_meta.hit) {
+        s_prefetch_train := false.B
+      }
+      // 2) It's a prefetch hit, i.e., a miss that should have happened without
+      //    prefetching. We should clear the prefetch bit on writeback since
+      //    prefetch hit becomes normal hit after this request.
+      .elsewhen (new_meta.prefetch) {
+        s_prefetch_train := false.B
+        s_writeback := false.B
       }
     }
   }

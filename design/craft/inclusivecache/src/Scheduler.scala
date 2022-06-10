@@ -33,7 +33,7 @@ class Scheduler(params: InclusiveCacheParameters) extends Module
     // Control port
     val req = Decoupled(new SinkXRequest(params)).flip
     val resp = Decoupled(new SourceXRequest(params))
-    val prefetch = new PrefetcherCtl(params).flip
+    val prefetch = new PrefetchCtl(params).flip
   }
 
   val sourceA = Module(new SourceA(params))
@@ -111,7 +111,9 @@ class Scheduler(params: InclusiveCacheParameters) extends Module
       (sourceD.io.req.ready || !m.io.schedule.bits.d.valid) &&
       (sourceE.io.req.ready || !m.io.schedule.bits.e.valid) &&
       (sourceX.io.req.ready || !m.io.schedule.bits.x.valid) &&
-      (directory.io.write.ready || !m.io.schedule.bits.dir.valid)
+      (directory.io.write.ready || !m.io.schedule.bits.dir.valid) &&
+      (prefetcher.io.train.ready || !m.io.schedule.bits.prefetch.train.valid) &&
+      (prefetcher.io.resp.ready || !m.io.schedule.bits.prefetch.resp.valid)
   }.reverse)
 
   // Round-robin arbitration of MSHRs
@@ -139,6 +141,8 @@ class Scheduler(params: InclusiveCacheParameters) extends Module
   sourceE.io.req := schedule.e
   sourceX.io.req := schedule.x
   directory.io.write := schedule.dir
+  prefetcher.io.train := schedule.prefetch.train
+  prefetcher.io.resp := schedule.prefetch.resp
 
   // Forward meta-data changes from nested transaction completion
   val select_c  = mshr_selectOH(params.mshrs-1)
@@ -315,14 +319,6 @@ class Scheduler(params: InclusiveCacheParameters) extends Module
     m.io.directory.bits := directory.io.result.bits
   }
 
-  // Send A channel schedule to prefetcher
-  val inner_miss = schedule.a.valid && !schedule.prefetch
-  prefetcher.io.train.valid := inner_miss
-  prefetcher.io.train.bits := chisel3.DontCare
-  prefetcher.io.train.bits.tag := schedule.a.bits.tag
-  prefetcher.io.train.bits.set := schedule.a.bits.set
-  prefetcher.io.ctl <> io.prefetch
-
   // MSHR response meta-data fetch
   sinkC.io.way :=
     Mux(bc_mshr.io.status.valid && bc_mshr.io.status.bits.set === sinkC.io.set,
@@ -355,6 +351,10 @@ class Scheduler(params: InclusiveCacheParameters) extends Module
   sourceD.io.grant_req := sinkD  .io.grant_req
   sourceC.io.evict_safe := sourceD.io.evict_safe
   sinkD  .io.grant_safe := sourceD.io.grant_safe
+
+  // Prefetcher MMIO ports
+  prefetcher.io.ctl <> io.prefetch
+  prefetcher.io.resp.valid := false.B
 
   private def afmt(x: AddressSet) = s"""{"base":${x.base},"mask":${x.mask}}"""
   private def addresses = params.inner.manager.managers.flatMap(_.address).map(afmt _).mkString(",")
