@@ -90,9 +90,31 @@ class Prefetcher(params: InclusiveCacheParameters) extends Module
   pred_req.tag := pred_tag
   pred_req.set := pred_set
 
-  val miss_addr = params.expandAddress(io.train.bits.tag, io.train.bits.set, 0.U)
+  println("params.inner.bundle.addressBits", params.inner.bundle.addressBits)
+  println("params.tagBits", params.tagBits)
+  println("params.setBits", params.setBits)
+  println("params.offsetBits", params.offsetBits)
+  println("params.addressMapping", params.addressMapping)
+
+  // We MUST restore the address after expansion, otherwise the high bit of the
+  // address may not be properly set. (I spent 3 whole days on this!!!
+  val miss_addr_unrestored = params.expandAddress(io.train.bits.tag, io.train.bits.set, 0.U)
+  val miss_addr = params.restoreAddress(miss_addr_unrestored)
+  println("miss_addr.getWidth", miss_addr.getWidth)
   val next_addr = miss_addr + params.cache.blockBytes.U
+  println("params.cache.blockBytes", params.cache.blockBytes)
   val cacheable = params.outer.manager.supportsAcquireBSafe(next_addr, params.offsetBits.U)
+
+  println("Prefetch cacheable ranges")
+  params.outer.manager.managers.foreach { m =>
+    println(m.name, m.address, m.supports)
+  }
+  println("")
+
+  val out_addr = Reg(UInt(64.W))
+  when (io.train.valid) {
+    out_addr := miss_addr
+  }
 
   when (io.train.valid && cacheable && io.ctl.enable) {
     pred_valid := true.B
@@ -111,11 +133,16 @@ class Prefetcher(params: InclusiveCacheParameters) extends Module
     "train hit"   -> (io.train.fire && io.train.bits.hit),
     "pred"        -> reqArb.io.in(1).fire,
     "pred grant"  -> (io.resp.fire && io.resp.bits.grant),
+    "cacheable"   -> (io.train.fire && cacheable),
+    "enable"      -> io.ctl.enable,
+    "pred valid"  -> pred_valid,
+    "clock"       -> true.B,
   )
   val counters = perf_events.map { case (_, e) =>
     val counter = WideCounter(params.perfCounterBits, RegNext(e.asUInt))
     counter.value
   }
   io.ctl.perf zip counters map { case (o, c) => o := c }
+  io.ctl.perf(8) := out_addr
   println("params.nPerfCounters", params.nPerfCounters)
 }

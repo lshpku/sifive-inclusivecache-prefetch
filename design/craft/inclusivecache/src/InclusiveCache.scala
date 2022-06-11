@@ -192,7 +192,7 @@ class InclusiveCache(
 
     val enablePrefetchingReg = RegInit(0.U(1.W))
     val enablePrefetching = RegField(64, enablePrefetchingReg)
-    val prefetchPerfReg = Wire(Vec(4, UInt(64.W)))
+    val prefetchPerfReg = Wire(Vec(9, UInt(64.W)))
     val prefetchPerf = prefetchPerfReg.map(RegField.r(64, _))
 
     // Information about the cache configuration
