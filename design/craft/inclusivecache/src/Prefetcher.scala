@@ -3,6 +3,8 @@ package sifive.blocks.inclusivecache
 import chisel3._
 import chisel3.util._
 import freechips.rocketchip.tilelink._
+import freechips.rocketchip.util.WideCounter
+import scala.collection.mutable.ArrayBuffer
 
 class PrefetchCtl(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params)
 {
@@ -10,6 +12,7 @@ class PrefetchCtl(params: InclusiveCacheParameters) extends InclusiveCacheBundle
     val address = UInt(params.inner.bundle.addressBits.W)
     val trunk = Bool()
   })
+  val perf = Flipped(Vec(params.nPerfCounters, UInt(params.perfCounterBits.W)))
   val enable = Bool()
 }
 
@@ -17,10 +20,12 @@ class PrefetchTrain(params: InclusiveCacheParameters) extends InclusiveCacheBund
 {
   val tag = UInt(params.tagBits.W)
   val set = UInt(params.setBits.W)
+  val hit = Bool()
 }
 
-class PrefetcherResp(params: InclusiveCacheParameters) extends PrefetchTrain(params)
+class PrefetcherResp(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params)
 {
+  val grant = Bool()
 }
 
 class Prefetcher(params: InclusiveCacheParameters) extends Module
@@ -100,4 +105,17 @@ class Prefetcher(params: InclusiveCacheParameters) extends Module
     printf("{event:Prefetcher.pred,cycle:%d,address:0x%x,tag:0x%x,set:0x%x}\n",
       cycle, pred_addr, io.req.bits.tag, io.req.bits.set)
   }
+
+  val perf_events = ArrayBuffer(
+    "train"       -> io.train.fire,
+    "train hit"   -> (io.train.fire && io.train.bits.hit),
+    "pred"        -> reqArb.io.in(1).fire,
+    "pred grant"  -> (io.resp.fire && io.resp.bits.grant),
+  )
+  val counters = perf_events.map { case (_, e) =>
+    val counter = WideCounter(params.perfCounterBits, RegNext(e.asUInt))
+    counter.value
+  }
+  io.ctl.perf zip counters map { case (o, c) => o := c }
+  println("params.nPerfCounters", params.nPerfCounters)
 }

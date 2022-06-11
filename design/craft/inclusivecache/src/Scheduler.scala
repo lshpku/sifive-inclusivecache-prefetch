@@ -354,7 +354,6 @@ class Scheduler(params: InclusiveCacheParameters) extends Module
 
   // Prefetcher MMIO ports
   prefetcher.io.ctl <> io.prefetch
-  prefetcher.io.resp.valid := false.B
 
   private def afmt(x: AddressSet) = s"""{"base":${x.base},"mask":${x.mask}}"""
   private def addresses = params.inner.manager.managers.flatMap(_.address).map(afmt _).mkString(",")

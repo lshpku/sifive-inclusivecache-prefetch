@@ -192,6 +192,8 @@ class InclusiveCache(
 
     val enablePrefetchingReg = RegInit(0.U(1.W))
     val enablePrefetching = RegField(64, enablePrefetchingReg)
+    val prefetchPerfReg = Wire(Vec(4, UInt(64.W)))
+    val prefetchPerf = prefetchPerfReg.map(RegField.r(64, _))
 
     // Information about the cache configuration
     val banksR  = RegField.r(8, UInt(node.edges.in.size),               RegFieldDesc("Banks",
@@ -208,7 +210,8 @@ class InclusiveCache(
         0x000 -> RegFieldGroup("Config", Some("Information about the Cache Configuration"), Seq(banksR, waysR, lgSetsR, lgBlockBytesR)),
         0x200 -> (if (control.get.beatBytes >= 8) Seq(flush64) else Seq()),
         0x240 -> Seq(flush32),
-        0x400 -> Seq(prefetchRead64, prefetchWrite64, enablePrefetching)
+        0x400 -> Seq(prefetchRead64, prefetchWrite64, enablePrefetching),
+        0x600 -> prefetchPerf
       )
     }
 
@@ -245,6 +248,7 @@ class InclusiveCache(
       scheduler.io.prefetch.req.bits.trunk := prefetchInTrunk
       scheduler.io.prefetch.enable := enablePrefetchingReg === 1.U
       prefetchInReady := scheduler.io.prefetch.req.ready
+      prefetchPerfReg := scheduler.io.prefetch.perf
 
       // Fix-up the missing addresses. We do this here so that the Scheduler can be
       // deduplicated by Firrtl to make hierarchical place-and-route easier.

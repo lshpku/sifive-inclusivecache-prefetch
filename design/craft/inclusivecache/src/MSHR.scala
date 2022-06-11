@@ -351,6 +351,8 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // We get tag & set from request no matter it's a miss or prefetch hit
   io.schedule.bits.prefetch.train.bits.tag := request.tag
   io.schedule.bits.prefetch.train.bits.set := request.set
+  io.schedule.bits.prefetch.train.bits.hit := meta.hit
+  io.schedule.bits.prefetch.resp.bits.grant := !s_writeback
 
   // Coverage of state transitions
   def cacheState(entry: DirectoryEntry, hit: Bool) = {
