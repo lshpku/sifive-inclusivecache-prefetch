@@ -1,15 +1,15 @@
-# block-inclusivecache-sifive
+在SiFive Inclusive Cache上实现预取
+===
 
-This `block` package contains an RTL generator for creating instances of a coherent, last-level, inclusive cache.
-The `InclusiveCache` controller enforces coherence among a set of caching clients
-using an invalidation-based coherence policy. 
-This policy is implemented using a full-map of directory bits stored with each cache block's metadata tag.
+## 原理
+### Scheduler
+![image/scheduler.svg](image/scheduler.svg)
+### MSHR状态分支逻辑
+![image/mshr-branch.svg](image/mshr-branch.svg)
+### Directory和BankedStore的存储方式
+![image/directory-bankedstore.svg](image/directory-bankedstore.svg)
+### 预取接口
+![image/prefetch-interface.svg](image/prefetch-interface.svg)
 
-The `InclusiveCache` is a TileLink adapter;
-it can be used as a drop-in replacement for Rocket-Chip's `tilelink.BroadcastHub` coherence manager.
-It additionally supplies a SW-controlled interface for flusing cache blocks based on physical addresses.
-
-The following parameters of the cache are easily `Config`-urable: 
-size, ways, banking and sub-banking factors, external bandwidth, network interface buffering.
-
-Stand-alone unit tests coming soon.
+## 使用方法
+使用方法已经放在另一个仓库里了，见[使用带预取功能的L2](https://github.com/lshpku/l2proj#%E4%BD%BF%E7%94%A8%E5%B8%A6%E9%A2%84%E5%8F%96%E5%8A%9F%E8%83%BD%E7%9A%84l2)
