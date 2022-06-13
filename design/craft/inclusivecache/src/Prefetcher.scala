@@ -14,6 +14,7 @@ class PrefetchCtl(params: InclusiveCacheParameters) extends InclusiveCacheBundle
   })
   val perf = Flipped(Vec(params.nPerfCounters, UInt(params.perfCounterBits.W)))
   val enable = Bool()
+  val next_n = UInt(log2Ceil(params.maxNextN).W)
 }
 
 class PrefetchTrain(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params)
@@ -37,12 +38,21 @@ class Prefetcher(params: InclusiveCacheParameters) extends Module
     val ctl = Flipped(new PrefetchCtl(params))
   })
 
-  io.train.ready := true.B
   io.resp.ready := true.B
 
+  val trains = Module(new Queue(new PrefetchTrain(params), params.trainQueueEntries, flow = true))
+  trains.io.enq <> io.train
+  // Discard train input when train queue is full
+  io.train.ready := true.B
+  when (!io.ctl.enable) {
+    trains.io.enq.valid := false.B
+  }
+
+  val reqs = Module(new Queue(new FullRequest(params), params.reqQueueEntries, flow = true))
+  io.req <> reqs.io.deq
+
   val reqArb = Module(new Arbiter(new FullRequest(params), 2))
-  io.req <> reqArb.io.out
-  io.ctl.req.ready := reqArb.io.in(0).ready
+  reqs.io.enq <> reqArb.io.out
 
   def make_req() = {
     val req = Wire(new FullRequest(params))
@@ -61,9 +71,13 @@ class Prefetcher(params: InclusiveCacheParameters) extends Module
     req
   }
 
+  val ctl_blkaddr = ~(~io.ctl.req.bits.address | ((BigInt(1) << params.offsetBits) - 1).U)
+  val ctl_cacheable = params.outer.manager.supportsAcquireBSafe(ctl_blkaddr, params.offsetBits.U)
+  io.ctl.req.ready := reqArb.io.in(0).ready || !ctl_cacheable
+
   val ctl_req = make_req()
   reqArb.io.in(0).bits := ctl_req
-  reqArb.io.in(0).valid := io.ctl.req.valid
+  reqArb.io.in(0).valid := io.ctl.req.valid && ctl_cacheable
 
   val (ctl_tag, ctl_set, _) = params.parseAddress(io.ctl.req.bits.address)
   ctl_req.param := Mux(io.ctl.req.bits.trunk, TLHints.PREFETCH_WRITE, TLHints.PREFETCH_READ)
@@ -71,24 +85,10 @@ class Prefetcher(params: InclusiveCacheParameters) extends Module
   ctl_req.set := ctl_set
 
   val cycle = freechips.rocketchip.util.WideCounter(32).value
-  when (io.ctl.req.fire) {
+  when (reqArb.io.in(0).fire) {
     printf("{event:Prefetcher.ctl,cycle:%d,address:0x%x,tag:0x%x,set:0x%x}\n",
       cycle, io.ctl.req.bits.address, io.req.bits.tag, io.req.bits.set)
   }
-  when (io.ctl.req.valid && !io.ctl.req.ready) {
-    printf("{event:Prefetcher.ctl.blocked,cycle:%d,address:0x%x,tag:0x%x,set:0x%x}\n",
-      cycle, io.ctl.req.bits.address, io.req.bits.tag, io.req.bits.set)
-  }
-
-  val pred_req = make_req()
-  val pred_valid = RegInit(false.B)
-  reqArb.io.in(1).bits := pred_req
-  reqArb.io.in(1).valid := pred_valid
-
-  val pred_addr = Reg(UInt(params.inner.bundle.addressBits.W))
-  val (pred_tag, pred_set, _) = params.parseAddress(pred_addr)
-  pred_req.tag := pred_tag
-  pred_req.set := pred_set
 
   println("params.inner.bundle.addressBits", params.inner.bundle.addressBits)
   println("params.tagBits", params.tagBits)
@@ -96,31 +96,45 @@ class Prefetcher(params: InclusiveCacheParameters) extends Module
   println("params.offsetBits", params.offsetBits)
   println("params.addressMapping", params.addressMapping)
 
+  val train = trains.io.deq.bits
   // We MUST restore the address after expansion, otherwise the high bit of the
   // address may not be properly set. (I spent 3 whole days on this!!!
-  val miss_addr_unrestored = params.expandAddress(io.train.bits.tag, io.train.bits.set, 0.U)
+  val miss_addr_unrestored = params.expandAddress(train.tag, train.set, 0.U)
   val miss_addr = params.restoreAddress(miss_addr_unrestored)
-  println("miss_addr.getWidth", miss_addr.getWidth)
-  val next_addr = miss_addr + params.cache.blockBytes.U
-  println("params.cache.blockBytes", params.cache.blockBytes)
-  val cacheable = params.outer.manager.supportsAcquireBSafe(next_addr, params.offsetBits.U)
 
-  println("Prefetch cacheable ranges")
-  params.outer.manager.managers.foreach { m =>
-    println(m.name, m.address, m.supports)
+  val next_n = Reg(UInt(log2Ceil(params.maxNextN).W)) // real value is next_n + 1
+  val cur_n = RegInit(0.U(log2Ceil(params.maxNextN).W)) // real value is cur_n + 1
+  val cur_delta = (cur_n + 1.U) << params.offsetBits.U
+  val pred_addr = miss_addr + cur_delta
+  val cacheable = params.outer.manager.supportsAcquireBSafe(pred_addr, params.offsetBits.U)
+
+  val pred_req = make_req()
+  val (pred_tag, pred_set, _) = params.parseAddress(pred_addr)
+  pred_req.tag := pred_tag
+  pred_req.set := pred_set
+  reqArb.io.in(1).bits := pred_req
+  reqArb.io.in(1).valid := false.B
+  trains.io.deq.ready := false.B
+
+  // Next-N-line generation loop
+  val pred_valid = cacheable && io.ctl.enable
+  val can_step = reqArb.io.in(1).ready || !pred_valid
+  when (trains.io.deq.valid) {
+    reqArb.io.in(1).valid := pred_valid
+    when (can_step) {
+      when (cur_n === next_n) {
+        cur_n := 0.U
+        next_n := io.ctl.next_n
+      } .otherwise {
+        cur_n := cur_n + 1.U
+      }
+    }
   }
-  println("")
-
-  val out_addr = Reg(UInt(64.W))
-  when (io.train.valid) {
-    out_addr := miss_addr
+  when (can_step && cur_n === next_n) {
+    trains.io.deq.ready := true.B
   }
-
-  when (io.train.valid && cacheable && io.ctl.enable) {
-    pred_valid := true.B
-    pred_addr := next_addr
-  } .elsewhen (reqArb.io.in(1).fire) {
-    pred_valid := false.B
+  when (!trains.io.deq.valid) {
+    next_n := io.ctl.next_n
   }
 
   when (reqArb.io.in(1).fire) {
@@ -133,16 +147,11 @@ class Prefetcher(params: InclusiveCacheParameters) extends Module
     "train hit"   -> (io.train.fire && io.train.bits.hit),
     "pred"        -> reqArb.io.in(1).fire,
     "pred grant"  -> (io.resp.fire && io.resp.bits.grant),
-    "cacheable"   -> (io.train.fire && cacheable),
-    "enable"      -> io.ctl.enable,
-    "pred valid"  -> pred_valid,
-    "clock"       -> true.B,
   )
   val counters = perf_events.map { case (_, e) =>
     val counter = WideCounter(params.perfCounterBits, RegNext(e.asUInt))
     counter.value
   }
   io.ctl.perf zip counters map { case (o, c) => o := c }
-  io.ctl.perf(8) := out_addr
   println("params.nPerfCounters", params.nPerfCounters)
 }

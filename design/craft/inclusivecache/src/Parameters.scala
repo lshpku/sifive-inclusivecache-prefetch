@@ -191,8 +191,13 @@ case class InclusiveCacheParameters(
   val innerMaskBits = inner.manager.beatBytes / micro.writeBytes
   val outerMaskBits = outer.manager.beatBytes / micro.writeBytes
 
-  val nPerfCounters = 9
+  // Prefetcher params
+  val nPerfCounters = 4
   val perfCounterBits = 64
+  val trainQueueEntries = 4
+  val reqQueueEntries = 4
+  val respQueueEntries = 0
+  val maxNextN = 8
 
   def clientBit(source: UInt): UInt = {
     if (clientBitsRaw == 0) {
