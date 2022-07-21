@@ -42,11 +42,8 @@ class Prefetcher(params: InclusiveCacheParameters) extends Module
 
   val trains = Module(new Queue(new PrefetchTrain(params), params.trainQueueEntries, flow = true))
   trains.io.enq <> io.train
-  // Discard train input when train queue is full
+  // Discard input when train queue is full
   io.train.ready := true.B
-  when (!io.ctl.enable) {
-    trains.io.enq.valid := false.B
-  }
 
   val reqs = Module(new Queue(new FullRequest(params), params.reqQueueEntries, flow = true))
   io.req <> reqs.io.deq
@@ -102,9 +99,8 @@ class Prefetcher(params: InclusiveCacheParameters) extends Module
   val miss_addr_unrestored = params.expandAddress(train.tag, train.set, 0.U)
   val miss_addr = params.restoreAddress(miss_addr_unrestored)
 
-  val next_n = Reg(UInt(log2Ceil(params.maxNextN).W)) // real value is next_n + 1
-  val cur_n = RegInit(0.U(log2Ceil(params.maxNextN).W)) // real value is cur_n + 1
-  val cur_delta = (cur_n + 1.U) << params.offsetBits.U
+  val cur_n = RegInit(1.U(log2Ceil(params.maxNextN + 1).W))
+  val cur_delta = cur_n << params.offsetBits.U
   val pred_addr = miss_addr + cur_delta
   val cacheable = params.outer.manager.supportsAcquireBSafe(pred_addr, params.offsetBits.U)
 
@@ -117,24 +113,20 @@ class Prefetcher(params: InclusiveCacheParameters) extends Module
   trains.io.deq.ready := false.B
 
   // Next-N-line generation loop
-  val pred_valid = cacheable && io.ctl.enable
+  val pred_valid = cacheable && cur_n <= io.ctl.next_n
   val can_step = reqArb.io.in(1).ready || !pred_valid
   when (trains.io.deq.valid) {
     reqArb.io.in(1).valid := pred_valid
     when (can_step) {
-      when (cur_n === next_n) {
-        cur_n := 0.U
-        next_n := io.ctl.next_n
-      } .otherwise {
+      when (cur_n < io.ctl.next_n) {
         cur_n := cur_n + 1.U
+      } .otherwise {
+        cur_n := 1.U
       }
     }
   }
-  when (can_step && cur_n === next_n) {
-    trains.io.deq.ready := true.B
-  }
-  when (!trains.io.deq.valid) {
-    next_n := io.ctl.next_n
+  when (can_step && cur_n >= io.ctl.next_n) {
+    trains.io.deq.ready := true.B // decouple ready from valid
   }
 
   when (reqArb.io.in(1).fire) {
