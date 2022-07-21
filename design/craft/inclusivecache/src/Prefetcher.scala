@@ -26,7 +26,24 @@ class PrefetchTrain(params: InclusiveCacheParameters) extends InclusiveCacheBund
 
 class PrefetcherResp(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params)
 {
-  val grant = Bool()
+  val tag = UInt(params.tagBits.W)
+  val set = UInt(params.setBits.W)
+  val grant = Bool() // fetches data from lower level
+}
+
+abstract class AbstractPrefetcher(params: InclusiveCacheParameters) extends Module
+{
+  val addressBits = params.inner.bundle.addressBits
+  val pageOffsetBits = 12
+
+  val io = IO(new Bundle {
+    // Eligible L2 read access (miss or prefetchd hit)
+    val access = Flipped(Decoupled(UInt(addressBits.W)))
+    // Prefetch request
+    val request = Decoupled(UInt(addressBits.W))
+    // Completed prefetch
+    val response = Flipped(Decoupled(UInt(addressBits.W)))
+  })
 }
 
 class Prefetcher(params: InclusiveCacheParameters) extends Module
@@ -37,8 +54,6 @@ class Prefetcher(params: InclusiveCacheParameters) extends Module
     val resp = Flipped(Decoupled(new PrefetcherResp(params)))
     val ctl = Flipped(new PrefetchCtl(params))
   })
-
-  io.resp.ready := true.B
 
   val trains = Module(new Queue(new PrefetchTrain(params), params.trainQueueEntries, flow = true))
   trains.io.enq <> io.train
@@ -93,46 +108,38 @@ class Prefetcher(params: InclusiveCacheParameters) extends Module
   println("params.offsetBits", params.offsetBits)
   println("params.addressMapping", params.addressMapping)
 
+  def restore_address(tag: UInt, set: UInt): UInt = {
+    val expanded = params.expandAddress(tag, set, 0.U)
+    // We MUST restore the address after expansion, otherwise the high bit of the
+    // address may not be properly set. (I spent 3 whole days on this!!!
+    params.restoreAddress(expanded)
+  }
+
+  val pf: AbstractPrefetcher = Module(new BestOffsetPrefetcher(params))
+
+  // Access
   val train = trains.io.deq.bits
-  // We MUST restore the address after expansion, otherwise the high bit of the
-  // address may not be properly set. (I spent 3 whole days on this!!!
-  val miss_addr_unrestored = params.expandAddress(train.tag, train.set, 0.U)
-  val miss_addr = params.restoreAddress(miss_addr_unrestored)
+  val miss_addr = restore_address(train.tag, train.set)
+  pf.io.access.bits := miss_addr
+  pf.io.access.valid := trains.io.deq.valid
+  trains.io.deq.ready := pf.io.access.ready
 
-  val cur_n = RegInit(1.U(log2Ceil(params.maxNextN + 1).W))
-  val cur_delta = cur_n << params.offsetBits.U
-  val pred_addr = miss_addr + cur_delta
+  // Request
+  val pred_addr = pf.io.request.bits
   val cacheable = params.outer.manager.supportsAcquireBSafe(pred_addr, params.offsetBits.U)
-
   val pred_req = make_req()
   val (pred_tag, pred_set, _) = params.parseAddress(pred_addr)
   pred_req.tag := pred_tag
   pred_req.set := pred_set
   reqArb.io.in(1).bits := pred_req
-  reqArb.io.in(1).valid := false.B
-  trains.io.deq.ready := false.B
+  reqArb.io.in(1).valid := pf.io.request.valid && cacheable
+  pf.io.request.ready := reqArb.io.in(1).ready || !cacheable
 
-  // Next-N-line generation loop
-  val pred_valid = cacheable && cur_n <= io.ctl.next_n
-  val can_step = reqArb.io.in(1).ready || !pred_valid
-  when (trains.io.deq.valid) {
-    reqArb.io.in(1).valid := pred_valid
-    when (can_step) {
-      when (cur_n < io.ctl.next_n) {
-        cur_n := cur_n + 1.U
-      } .otherwise {
-        cur_n := 1.U
-      }
-    }
-  }
-  when (can_step && cur_n >= io.ctl.next_n) {
-    trains.io.deq.ready := true.B // decouple ready from valid
-  }
-
-  when (reqArb.io.in(1).fire) {
-    printf("{event:Prefetcher.pred,cycle:%d,address:0x%x,tag:0x%x,set:0x%x}\n",
-      cycle, pred_addr, io.req.bits.tag, io.req.bits.set)
-  }
+  // Response
+  val resp_addr = restore_address(io.resp.bits.tag, io.resp.bits.set)
+  pf.io.response.valid := io.resp.valid
+  pf.io.response.bits := resp_addr
+  io.resp.ready := pf.io.response.ready
 
   val perf_events = ArrayBuffer(
     "train"       -> io.train.fire,

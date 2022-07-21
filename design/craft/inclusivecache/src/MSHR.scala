@@ -349,9 +349,11 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   io.schedule.bits.dir.bits.way   := meta.way
   io.schedule.bits.dir.bits.data  := Mux(!s_release, invalid, Wire(new DirectoryEntry(params), init = final_meta_writeback))
   // We get tag & set from request no matter it's a miss or prefetch hit
-  io.schedule.bits.prefetch.train.bits.tag := request.tag
-  io.schedule.bits.prefetch.train.bits.set := request.set
-  io.schedule.bits.prefetch.train.bits.hit := meta.hit
+  io.schedule.bits.prefetch.train.bits.tag  := request.tag
+  io.schedule.bits.prefetch.train.bits.set  := request.set
+  io.schedule.bits.prefetch.train.bits.hit  := meta.hit
+  io.schedule.bits.prefetch.resp.bits.tag   := request.tag
+  io.schedule.bits.prefetch.resp.bits.set   := request.set
   io.schedule.bits.prefetch.resp.bits.grant := !s_writeback
 
   // Coverage of state transitions
