@@ -352,6 +352,8 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   io.schedule.bits.prefetch.train.bits.tag  := request.tag
   io.schedule.bits.prefetch.train.bits.set  := request.set
   io.schedule.bits.prefetch.train.bits.hit  := meta.hit
+  val prefetch_late = Reg(Bool())
+  io.schedule.bits.prefetch.train.bits.late := prefetch_late
   io.schedule.bits.prefetch.resp.bits.tag   := request.tag
   io.schedule.bits.prefetch.resp.bits.set   := request.set
   io.schedule.bits.prefetch.resp.bits.grant := !s_writeback
@@ -730,13 +732,15 @@ class MSHR(params: InclusiveCacheParameters) extends Module
       // 1) It's a data miss (we don't consider permission miss).
       when (!new_meta.hit) {
         s_prefetch_train := false.B
+        prefetch_late := false.B
       }
-      // 2) It's a prefetch hit, i.e., a miss that should have happened without
+      // 2) It's a prefetch hit, i.e., a miss that would have happened without
       //    prefetching. We should clear the prefetch bit on writeback since
       //    prefetch hit becomes normal hit after this request.
       .elsewhen (new_meta.prefetch) {
         s_prefetch_train := false.B
         s_writeback := false.B
+        prefetch_late := io.allocate.valid && io.allocate.bits.repeat
       }
     }
   }

@@ -21,7 +21,8 @@ class PrefetchTrain(params: InclusiveCacheParameters) extends InclusiveCacheBund
 {
   val tag = UInt(params.tagBits.W)
   val set = UInt(params.setBits.W)
-  val hit = Bool()
+  val hit = Bool() // hits on a prefetched line
+  val late = Bool() // waits for the prefetch to complete
 }
 
 class PrefetcherResp(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params)
@@ -37,7 +38,7 @@ abstract class AbstractPrefetcher(params: InclusiveCacheParameters) extends Modu
   val pageOffsetBits = 12
 
   val io = IO(new Bundle {
-    // Eligible L2 read access (miss or prefetchd hit)
+    // Eligible L2 read access (miss or prefetch hit)
     val access = Flipped(Decoupled(UInt(addressBits.W)))
     // Prefetch request
     val request = Decoupled(UInt(addressBits.W))
@@ -171,6 +172,7 @@ class Prefetcher(params: InclusiveCacheParameters) extends Module
   val perf_events = ArrayBuffer(
     "train"       -> io.train.fire,
     "train hit"   -> (io.train.fire && io.train.bits.hit),
+    "train late"  -> (io.train.fire && io.train.bits.late),
     "pred"        -> reqArb.io.in(1).fire,
     "pred grant"  -> (io.resp.fire && io.resp.bits.grant),
   )
