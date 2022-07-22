@@ -13,8 +13,8 @@ class PrefetchCtl(params: InclusiveCacheParameters) extends InclusiveCacheBundle
     val trunk = Bool()
   })
   val perf = Flipped(Vec(params.nPerfCounters, UInt(params.perfCounterBits.W)))
-  val enable = Bool()
-  val next_n = UInt(log2Ceil(params.maxNextN).W)
+  val sel = UInt(2.W)
+  val args = Vec(params.nArgs, UInt(64.W))
 }
 
 class PrefetchTrain(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params)
@@ -43,7 +43,21 @@ abstract class AbstractPrefetcher(params: InclusiveCacheParameters) extends Modu
     val request = Decoupled(UInt(addressBits.W))
     // Completed prefetch
     val response = Flipped(Decoupled(UInt(addressBits.W)))
+
+    // Is this prefetcher enabled?
+    val enable = Input(Bool())
+    // Optional arguments.
+    // Args are valid only when enable is true.
+    val args = Input(Vec(params.nArgs, UInt(64.W)))
   })
+}
+
+class NullPrefetcher(params: InclusiveCacheParameters)
+  extends AbstractPrefetcher(params) {
+  io.access.ready := true.B
+  io.response.ready := true.B
+  io.request.valid := false.B
+  io.request.bits := DontCare
 }
 
 class Prefetcher(params: InclusiveCacheParameters) extends Module
@@ -54,11 +68,6 @@ class Prefetcher(params: InclusiveCacheParameters) extends Module
     val resp = Flipped(Decoupled(new PrefetcherResp(params)))
     val ctl = Flipped(new PrefetchCtl(params))
   })
-
-  val trains = Module(new Queue(new PrefetchTrain(params), params.trainQueueEntries, flow = true))
-  trains.io.enq <> io.train
-  // Discard input when train queue is full
-  io.train.ready := true.B
 
   val reqs = Module(new Queue(new FullRequest(params), params.reqQueueEntries, flow = true))
   io.req <> reqs.io.deq
@@ -115,32 +124,50 @@ class Prefetcher(params: InclusiveCacheParameters) extends Module
     params.restoreAddress(expanded)
   }
 
-  val pf: AbstractPrefetcher = Module(new BestOffsetPrefetcher(params))
+  val prefetchers = Seq[AbstractPrefetcher](
+    Module(new NullPrefetcher(params)),
+    Module(new NextNLinePrefetcher(params)),
+    Module(new BestOffsetPrefetcher(params))
+  )
 
-  // Access
-  val train = trains.io.deq.bits
-  val miss_addr = restore_address(train.tag, train.set)
-  pf.io.access.bits := miss_addr
-  pf.io.access.valid := trains.io.deq.valid
-  trains.io.deq.ready := pf.io.access.ready
+  // Broadcast train and response to all prefetchers
+  // TODO: should train and resp be able to back-pressure MSHRs?
+  val miss_addr = restore_address(io.train.bits.tag, io.train.bits.set)
+  for (pf <- prefetchers) {
+    pf.io.access.bits := miss_addr
+    pf.io.access.valid := io.train.valid
+  }
+  io.train.ready := true.B
 
-  // Request
-  val pred_addr = pf.io.request.bits
+  val resp_addr = restore_address(io.resp.bits.tag, io.resp.bits.set)
+  for (pf <- prefetchers) {
+    pf.io.response.valid := io.resp.valid
+    pf.io.response.bits := resp_addr
+  }
+  io.resp.ready := true.B
+
+  // Accept requests from only the selected prefetcher.
+  // Requests from other prefetchers are not blocked but discarded
+  // silently, as if they were consumed from the prefetchers' point
+  // of view.
+  val pred_addr = VecInit(prefetchers.map(_.io.request.bits))(io.ctl.sel)
+  val pred_valid = VecInit(prefetchers.map(_.io.request.valid))(io.ctl.sel)
   val cacheable = params.outer.manager.supportsAcquireBSafe(pred_addr, params.offsetBits.U)
   val pred_req = make_req()
   val (pred_tag, pred_set, _) = params.parseAddress(pred_addr)
   pred_req.tag := pred_tag
   pred_req.set := pred_set
   reqArb.io.in(1).bits := pred_req
-  reqArb.io.in(1).valid := pf.io.request.valid && cacheable
-  pf.io.request.ready := reqArb.io.in(1).ready || !cacheable
+  reqArb.io.in(1).valid := pred_valid && cacheable
 
-  // Response
-  val resp_addr = restore_address(io.resp.bits.tag, io.resp.bits.set)
-  pf.io.response.valid := io.resp.valid
-  pf.io.response.bits := resp_addr
-  io.resp.ready := pf.io.response.ready
+  for ((pf, i) <- prefetchers.zipWithIndex) {
+    pf.io.request.ready := Mux(i.U === io.ctl.sel,
+      reqArb.io.in(1).ready || !cacheable, true.B)
+    pf.io.enable := i.U === io.ctl.sel
+    pf.io.args := io.ctl.args
+  }
 
+  // Performance counters
   val perf_events = ArrayBuffer(
     "train"       -> io.train.fire,
     "train hit"   -> (io.train.fire && io.train.bits.hit),

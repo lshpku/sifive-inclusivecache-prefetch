@@ -194,10 +194,8 @@ case class InclusiveCacheParameters(
   // Prefetcher params
   val nPerfCounters = 4
   val perfCounterBits = 64
-  val trainQueueEntries = 4
   val reqQueueEntries = 4
-  val respQueueEntries = 0
-  val maxNextN = 8
+  val nArgs = 4
 
   def clientBit(source: UInt): UInt = {
     if (clientBitsRaw == 0) {
