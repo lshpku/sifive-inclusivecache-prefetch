@@ -14,32 +14,39 @@ object SPPParams {
   val lgSTSets = lgSTEntries - lgSTWays
   val nSTSets = 1 << lgSTSets
   val signatureBits = 12
-
   val nDeltas = 4
+
   val counterBits = 4
   val maxCounter = (1 << counterBits) - 1
 
-  // Confidence is a fix-point number between 0 and 1, where 7'b0 = 0
-  // and 7'b1111111 = 1.
+  // Confidence is a fix-point number in the scope [0, 2),
+  // where 7'b0 = 0 and 7'b1000000 = 1.
   val cfdBits = 7
   val maxCfd = (1 << cfdBits) - 1
+  val unitCfd = 1 << (cfdBits - 1)
 
   val prefThresRatio = 0.25
   val prefThres = (prefThresRatio * maxCfd).toInt
 
-  val divTab = ArrayBuffer[Int]()
-  for (i <- 0 to maxCounter) {
-    for (j <- 0 to maxCounter) {
-      val r = i.toFloat / j.toFloat
-      divTab += (r * maxCfd).toInt
+  def makeDivTab(): Vec[UInt] = {
+    val divTab = Wire(Vec(1 << (counterBits * 2), UInt(cfdBits.W)))
+    for (i <- 0 to maxCounter) {
+      for (j <- 0 to maxCounter) {
+        val index = (i << counterBits) + j
+        if (i <= j && j != 0) {
+          val cfd = (i.toFloat / j.toFloat * unitCfd).toInt
+          divTab(index) := cfd.U
+        } else {
+          divTab(index) := DontCare
+        }
+      }
     }
+    divTab
   }
-  println("divTab", divTab)
-  require(divTab.size == 1 << (counterBits * 2))
 
-  def divide(a: UInt, b: UInt): UInt = {
+  def divide(divTab: Vec[UInt], a: UInt, b: UInt): UInt = {
     val index = Cat(a(counterBits - 1, 0), b(counterBits - 1, 0))
-    VecInit(divTab.map(_.U))(index)
+    divTab(index)
   }
 }
 
@@ -105,6 +112,8 @@ class SignaturePathPrefetcher(params: InclusiveCacheParameters)
   val cur_offset = Reg(UInt(offsetBits.W))
   val cur_cfd = Reg(UInt(SPPParams.cfdBits.W))
 
+  val divTab = SPPParams.makeDivTab()
+
   def tree_compare(in: Vec[UInt], begin: Int, end: Int, cmp: (UInt, UInt) => Bool): UInt = {
     require(end > begin, "invalid range")
     if (end - begin == 1) {
@@ -146,7 +155,7 @@ class SignaturePathPrefetcher(params: InclusiveCacheParameters)
     // update ST
     val lastOffset = Mux(hit, st_read(hit_way).lastOffset, 0.U)
     val sig = Mux(hit, st_read(hit_way).signature, 0.U)
-    val delta = cur_offset - lastOffset
+    val delta = cur_offset -& lastOffset
     val new_sig = (sig << 3).asUInt ^ delta
     st_sig := sig
     st_delta := delta
@@ -168,7 +177,7 @@ class SignaturePathPrefetcher(params: InclusiveCacheParameters)
     state := s_pt_1
 
     printf("{cycle:%d,object:SPP,state:st_2,hit_vec:0b%b,hit_way:%d,lastOffset:%d,lastSig:0x%x,delta:%d,newSig:0x%x}\n",
-      cycle, VecInit(hit_vec).asUInt, hit_way, lastOffset, sig, delta, new_sig)
+      cycle, VecInit(hit_vec).asUInt, hit_way, lastOffset, sig, delta, new_sig(SPPParams.signatureBits - 1, 0))
   }.elsewhen(state === s_pt_1) {
     state := s_pt_2
     printf("{cycle:%d,object:SPP,state:pt_1}\n", cycle)
@@ -195,16 +204,20 @@ class SignaturePathPrefetcher(params: InclusiveCacheParameters)
     new_entry.delta(update_way) := st_delta
     pt.write(st_sig, new_entry)
     state := s_pt_3
-    printf("{cycle:%d,object:SPP,state:pt_2}\n", cycle)
+
+    printf("{cycle:%d,object:SPP,state:pt_2,hit_vec:0b%b,hit_way:%d,min_way:%d,cDelta:%d,cSig:%d}\n",
+      cycle, VecInit(hit_vec).asUInt, hit_way, min_way, cDelta, pt_read.cSig)
   }.elsewhen(state === s_pt_3) {
     // read PT
     pt_index := cur_sig
     pt_ren := true.B
     state := s_pf_1
-    printf("{cycle:%d,object:SPP,state:pt_3}\n", cycle)
+    printf("{cycle:%d,object:SPP,state:pt_3,cig:0x%x}\n", cycle, cur_sig)
   }.elsewhen(state === s_pf_1) {
+    val cfd = (cur_cfd >> 1).asUInt +& (cur_cfd >> 2).asUInt
+    cur_cfd := cfd
     state := s_pf_2
-    printf("{cycle:%d,object:SPP,state:pf_1}\n", cycle)
+    printf("{cycle:%d,object:SPP,state:pf_1,cur_cfd:%d,cfd:%d}\n", cycle, cur_cfd, cfd)
   }.elsewhen(state === s_pf_2) {
     // find the delta with the max counter value
     val max_way = tree_compare(pt_read.cDelta, 0, SPPParams.nDeltas, _ > _)
@@ -212,8 +225,8 @@ class SignaturePathPrefetcher(params: InclusiveCacheParameters)
     val cDelta = pt_read.cDelta(max_way)
 
     // compute confidence
-    val rDelta = SPPParams.divide(cDelta, pt_read.cSig)
-    val cfd = (cur_cfd * rDelta) >> SPPParams.cfdBits
+    val rDelta = SPPParams.divide(divTab, cDelta, pt_read.cSig)
+    val cfd = (cur_cfd * rDelta) >> (SPPParams.cfdBits - 1)
     cur_cfd := cfd
 
     // compute prefetch address
