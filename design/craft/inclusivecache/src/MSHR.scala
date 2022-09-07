@@ -349,11 +349,13 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   io.schedule.bits.dir.bits.way   := meta.way
   io.schedule.bits.dir.bits.data  := Mux(!s_release, invalid, Wire(new DirectoryEntry(params), init = final_meta_writeback))
   // We get tag & set from request no matter it's a miss or prefetch hit
+  val prefetch_late = Reg(Bool())
   io.schedule.bits.prefetch.train.bits.tag  := request.tag
   io.schedule.bits.prefetch.train.bits.set  := request.set
-  io.schedule.bits.prefetch.train.bits.hit  := meta.hit
-  val prefetch_late = Reg(Bool())
-  io.schedule.bits.prefetch.train.bits.late := prefetch_late
+  io.schedule.bits.prefetch.train.bits.state:= Mux(!meta.hit, AccessState.MISS,
+                                               Mux(!meta.prefetch, AccessState.HIT,
+                                               Mux(prefetch_late, AccessState.LATE_HIT,
+                                                   AccessState.PREFETCH_HIT)))
   io.schedule.bits.prefetch.resp.bits.tag   := request.tag
   io.schedule.bits.prefetch.resp.bits.set   := request.set
   io.schedule.bits.prefetch.resp.bits.grant := !s_writeback
@@ -728,17 +730,13 @@ class MSHR(params: InclusiveCacheParameters) extends Module
       when (!new_request.opcode(2) && new_meta.hit && !new_meta.dirty) {
         s_writeback := Bool(false)
       }
-      // Can we train the prefetcher?
-      // 1) It's a data miss (we don't consider permission miss).
-      when (!new_meta.hit) {
-        s_prefetch_train := false.B
-        prefetch_late := false.B
-      }
-      // 2) It's a prefetch hit, i.e., a miss that would have happened without
-      //    prefetching. We should clear the prefetch bit on writeback since
-      //    prefetch hit becomes normal hit after this request.
-      .elsewhen (new_meta.prefetch) {
-        s_prefetch_train := false.B
+      // Always train the prefetcher for A channel requests
+      s_prefetch_train := false.B
+      prefetch_late := false.B
+      // For prefetch hit, i.e., a miss that would have happened without
+      // prefetching, we should clear the prefetch bit on writeback since
+      // prefetch hit becomes normal hit after this request.
+      when (new_meta.prefetch) {
         s_writeback := false.B
         prefetch_late := io.allocate.valid && io.allocate.bits.repeat
       }

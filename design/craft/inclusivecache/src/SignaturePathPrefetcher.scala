@@ -82,8 +82,9 @@ class SignaturePathPrefetcher(params: InclusiveCacheParameters)
   val offsetBits = SPPParams.pageOffsetBits - params.offsetBits
   val deltaBits = offsetBits + 1
 
-  val ppn = miss_q.bits(addressBits - 1, SPPParams.pageOffsetBits)
-  val offset = miss_q.bits(SPPParams.pageOffsetBits - 1, params.offsetBits)
+  val miss_addr = miss_q.bits.address
+  val ppn = miss_addr(addressBits - 1, SPPParams.pageOffsetBits)
+  val offset = miss_addr(SPPParams.pageOffsetBits - 1, params.offsetBits)
   val tag = ppn(ppnBits - 1, SPPParams.lgSTSets)
   val set = ppn(SPPParams.lgSTSets - 1, 0)
 
@@ -217,7 +218,7 @@ class SignaturePathPrefetcher(params: InclusiveCacheParameters)
     val cfd = (cur_cfd >> 1).asUInt +& (cur_cfd >> 2).asUInt
     cur_cfd := cfd
     state := s_pf_2
-    printf("{cycle:%d,object:SPP,state:pf_1,cur_cfd:%d,cfd:%d}\n", cycle, cur_cfd, cfd)
+    printf("{cycle:%d,object:SPP,state:pf_1,cfd:%d}\n", cycle, cfd)
   }.elsewhen(state === s_pf_2) {
     // find the delta with the max counter value
     val max_way = tree_compare(pt_read.cDelta, 0, SPPParams.nDeltas, _ > _)
@@ -249,7 +250,7 @@ class SignaturePathPrefetcher(params: InclusiveCacheParameters)
       state := s_idle
     }
 
-    printf("{cycle:%d,object:SPP,state:pf_2,maxWay:%d,delta:%d,cDelta:%d,cSig:%d,rDelta:%d,cfd:%d}\n",
-      cycle, max_way, delta, cDelta, pt_read.cSig, rDelta, cfd)
+    printf("{cycle:%d,object:SPP,state:pf_2,maxWay:%d,delta:%d,cDelta:%d,cSig:%d,rDelta:%d,cfd:%d,offset:%d,sig:0x%x}\n",
+      cycle, max_way, delta, cDelta, pt_read.cSig, rDelta, cfd, offset, sig(SPPParams.signatureBits - 1, 0))
   }
 }

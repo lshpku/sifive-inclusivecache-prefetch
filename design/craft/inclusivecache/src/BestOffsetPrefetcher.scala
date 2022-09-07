@@ -48,6 +48,8 @@ class BestOffsetPrefetcher(params: InclusiveCacheParameters)
   extends AbstractPrefetcher(params) {
   io.access.ready := true.B
   io.response.ready := true.B
+  val miss_addr = io.access.bits.address
+  val miss_valid = io.access.valid && AccessState.eligible(io.access.bits.state)
 
   val cycle = freechips.rocketchip.util.WideCounter(32).value
 
@@ -101,17 +103,17 @@ class BestOffsetPrefetcher(params: InclusiveCacheParameters)
   // Handle misses and prefetch hits
   {
     // 1. make prediction
-    val line = io.access.bits(addressBits - 1, params.offsetBits)
-    val page = io.access.bits(addressBits - 1, pageOffsetBits)
+    val line = miss_addr(addressBits - 1, params.offsetBits)
+    val page = miss_addr(addressBits - 1, pageOffsetBits)
     val predLine = line + D
     val predAddr = Cat(predLine, 0.U(params.offsetBits.W))
     val predPage = predAddr(addressBits - 1, pageOffsetBits)
-    when (io.access.valid) {
+    when (miss_valid) {
       printf("{event:BOP.access,cycle:%d,line:0x%x,Di:%d,di:%d}\n", cycle, line, Di, di)
     }
     io.request.valid := false.B
     io.request.bits := DontCare
-    when (io.access.valid && page === predPage && enable) {
+    when (miss_valid && page === predPage && enable) {
       io.request.valid := true.B
       io.request.bits := predAddr
       printf("{event:BOP.request,cycle:%d,line:0x%x}\n", cycle, predLine)
@@ -123,7 +125,7 @@ class BestOffsetPrefetcher(params: InclusiveCacheParameters)
     val basePage = baseAddr(addressBits - 1, pageOffsetBits)
     val index = baseLine(BOPParams.rrIndexBits - 1, 0)
     val tag = baseLine(lineBits - 1, BOPParams.rrIndexBits)
-    val rrReadEn = io.access.valid && page === basePage && state === s_learn
+    val rrReadEn = miss_valid && page === basePage && state === s_learn
     val rrTag = rr.read(index, rrReadEn)
 
     // 3. increment score
@@ -146,7 +148,7 @@ class BestOffsetPrefetcher(params: InclusiveCacheParameters)
     }
 
     // 4. increment offset index and round number
-    when (io.access.valid && state === s_learn) {
+    when (miss_valid && state === s_learn) {
       when (di =/= (offsetList.length - 1).U) {
         di := di + 1.U
       } .otherwise {
@@ -179,8 +181,8 @@ class BestOffsetPrefetcher(params: InclusiveCacheParameters)
     }
 
     // 2. when prefetch is off, record Y itself
-    when (!enable && io.access.valid) {
-      baseLine := io.access.bits(addressBits - 1, params.offsetBits)
+    when (!enable && miss_valid) {
+      baseLine := miss_addr(addressBits - 1, params.offsetBits)
       rrWriteEn := true.B
     }
 

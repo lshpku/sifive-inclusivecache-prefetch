@@ -2,8 +2,8 @@ package sifive.blocks.inclusivecache
 
 import chisel3._
 import chisel3.util._
+import freechips.rocketchip.util._
 import freechips.rocketchip.tilelink._
-import freechips.rocketchip.util.WideCounter
 import scala.collection.mutable.ArrayBuffer
 
 class PrefetchCtl(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params)
@@ -17,12 +17,23 @@ class PrefetchCtl(params: InclusiveCacheParameters) extends InclusiveCacheBundle
   val args = Vec(params.nArgs, UInt(64.W))
 }
 
+object AccessState {
+  val bits = 2
+  def HIT = 0.U(bits.W)
+  def MISS = 1.U(bits.W)
+  def PREFETCH_HIT = 2.U(bits.W)
+  def LATE_HIT = 3.U(bits.W)
+
+  def eligible(state: UInt): Bool = {
+    state.isOneOf(MISS, PREFETCH_HIT)
+  }
+}
+
 class PrefetchTrain(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params)
 {
   val tag = UInt(params.tagBits.W)
   val set = UInt(params.setBits.W)
-  val hit = Bool() // hits on a prefetched line
-  val late = Bool() // waits for the prefetch to complete
+  val state = UInt(AccessState.bits.W)
 }
 
 class PrefetcherResp(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params)
@@ -32,14 +43,20 @@ class PrefetcherResp(params: InclusiveCacheParameters) extends InclusiveCacheBun
   val grant = Bool() // fetches data from lower level
 }
 
+class PrefetchAccess(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params)
+{
+  val address = UInt(params.inner.bundle.addressBits.W)
+  val state = UInt(AccessState.bits.W)
+}
+
 abstract class AbstractPrefetcher(params: InclusiveCacheParameters) extends Module
 {
   val addressBits = params.inner.bundle.addressBits
   val pageOffsetBits = 12
 
   val io = IO(new Bundle {
-    // Eligible L2 read access (miss or prefetch hit)
-    val access = Flipped(Decoupled(UInt(addressBits.W)))
+    // L2 access
+    val access = Flipped(Decoupled(new PrefetchAccess(params)))
     // Prefetch request
     val request = Decoupled(UInt(addressBits.W))
     // Completed prefetch
@@ -128,14 +145,16 @@ class Prefetcher(params: InclusiveCacheParameters) extends Module
   val prefetchers = Seq[AbstractPrefetcher](
     Module(new NullPrefetcher(params)),
     Module(new NextNLinePrefetcher(params)),
-    Module(new BestOffsetPrefetcher(params))
+    Module(new BestOffsetPrefetcher(params)),
+    Module(new SignaturePathPrefetcher(params))
   )
 
   // Broadcast train and response to all prefetchers
   // TODO: should train and resp be able to back-pressure MSHRs?
   val miss_addr = restore_address(io.train.bits.tag, io.train.bits.set)
   for (pf <- prefetchers) {
-    pf.io.access.bits := miss_addr
+    pf.io.access.bits.address := miss_addr
+    pf.io.access.bits.state := io.train.bits.state
     pf.io.access.valid := io.train.valid
   }
   io.train.ready := true.B
@@ -171,8 +190,9 @@ class Prefetcher(params: InclusiveCacheParameters) extends Module
   // Performance counters
   val perf_events = ArrayBuffer(
     "train"       -> io.train.fire,
-    "train hit"   -> (io.train.fire && io.train.bits.hit),
-    "train late"  -> (io.train.fire && io.train.bits.late),
+    "train hit"   -> (io.train.fire && io.train.bits.state === AccessState.HIT),
+    "train miss"  -> (io.train.fire && io.train.bits.state === AccessState.MISS),
+    "train late"  -> (io.train.fire && io.train.bits.state === AccessState.LATE_HIT),
     "pred"        -> reqArb.io.in(1).fire,
     "pred grant"  -> (io.resp.fire && io.resp.bits.grant),
   )
