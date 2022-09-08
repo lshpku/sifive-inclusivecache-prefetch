@@ -192,7 +192,7 @@ case class InclusiveCacheParameters(
   val outerMaskBits = outer.manager.beatBytes / micro.writeBytes
 
   // Prefetcher params
-  val nPerfCounters = 5
+  val nPerfCounters = 6
   val perfCounterBits = 64
   val reqQueueEntries = 4
   val nArgs = 4

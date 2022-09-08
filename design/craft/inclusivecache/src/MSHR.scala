@@ -730,15 +730,20 @@ class MSHR(params: InclusiveCacheParameters) extends Module
       when (!new_request.opcode(2) && new_meta.hit && !new_meta.dirty) {
         s_writeback := Bool(false)
       }
-      // Always train the prefetcher for A channel requests
-      s_prefetch_train := false.B
-      prefetch_late := false.B
-      // For prefetch hit, i.e., a miss that would have happened without
-      // prefetching, we should clear the prefetch bit on writeback since
-      // prefetch hit becomes normal hit after this request.
-      when (new_meta.prefetch) {
-        s_writeback := false.B
-        prefetch_late := io.allocate.valid && io.allocate.bits.repeat
+      // Do we train the prefetcher?
+      // We only consider cacheable read requests, because uncacheable
+      // requests (e.g. Get or Put) cannot be cached by L2, and requests
+      // for permission (e.g. AcquirePerm) are too rare to benefit from.
+      when (new_request.opcode === AcquireBlock) {
+        s_prefetch_train := false.B
+        prefetch_late := false.B
+        // For prefetch hit, i.e., a miss that would have happened without
+        // prefetching, we should clear the prefetch bit on writeback since
+        // prefetch hit becomes normal hit after this request.
+        when (new_meta.prefetch) {
+          s_writeback := false.B
+          prefetch_late := io.allocate.valid && io.allocate.bits.repeat
+        }
       }
     }
   }

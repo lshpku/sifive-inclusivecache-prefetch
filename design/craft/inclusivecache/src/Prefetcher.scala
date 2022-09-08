@@ -19,13 +19,13 @@ class PrefetchCtl(params: InclusiveCacheParameters) extends InclusiveCacheBundle
 
 object AccessState {
   val bits = 2
-  def HIT = 0.U(bits.W)
-  def MISS = 1.U(bits.W)
+  def MISS = 0.U(bits.W)
+  def HIT = 1.U(bits.W)
   def PREFETCH_HIT = 2.U(bits.W)
   def LATE_HIT = 3.U(bits.W)
 
   def eligible(state: UInt): Bool = {
-    state.isOneOf(MISS, PREFETCH_HIT)
+    state.isOneOf(MISS, PREFETCH_HIT, LATE_HIT)
   }
 }
 
