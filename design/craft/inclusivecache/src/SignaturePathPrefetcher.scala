@@ -129,6 +129,7 @@ class SignaturePathPrefetcher(params: InclusiveCacheParameters)
 
   val s_idle :: s_st_1 :: s_st_2 :: s_pt_1 :: s_pt_2 :: s_pt_3 :: s_pf_1 :: s_pf_2 :: Nil = Enum(8)
   val state = RegInit(s_idle)
+  miss_q.ready := state === s_idle
 
   val cycle = freechips.rocketchip.util.WideCounter(32).value
 
@@ -142,7 +143,9 @@ class SignaturePathPrefetcher(params: InclusiveCacheParameters)
     st_ren := true.B
     state := s_st_1
 
-    printf("{cycle:%d,object:SPP,state:idle,ppn:0x%x,offset:%d}\n", cycle, ppn, offset)
+    val cacheable = params.outer.manager.supportsAcquireBSafe(miss_addr, params.offsetBits.U)
+    printf("{cycle:%d,object:SPP,state:idle,ppn:0x%x,offset:%d,cacheable:%d,miss_state:%d}\n",
+      cycle, ppn, offset, cacheable, miss_q.bits.state)
   }.elsewhen(state === s_st_1) {
     state := s_st_2
     printf("{cycle:%d,object:SPP,state:st_1}\n", cycle)
@@ -167,15 +170,24 @@ class SignaturePathPrefetcher(params: InclusiveCacheParameters)
     update_set(update_way).tag := st_tag
     update_set(update_way).lastOffset := cur_offset
     update_set(update_way).signature := new_sig
-    st.write(RegNext(RegNext(set)), update_set)
-    when(hit) {
-      st_lru.access(RegNext(RegNext(set)), hit_way)
-    }
 
-    // read PT
-    pt_index := sig
-    pt_ren := true.B
-    state := s_pt_1
+    // Delta = 0 may occur when the core is competing for shared data.
+    // We should ignore the delta = 0 cases, otherwise the lookahead
+    // will run into dead loop.
+    when (delta =/= 0.U) {
+      st.write(RegNext(RegNext(set)), update_set)
+      when(hit) {
+        st_lru.access(RegNext(RegNext(set)), hit_way)
+      }
+
+      // read PT
+      pt_index := sig
+      pt_ren := true.B
+
+      state := s_pt_1
+    } .otherwise {
+      state := s_idle
+    }
 
     printf("{cycle:%d,object:SPP,state:st_2,hit_vec:0b%b,hit_way:%d,lastOffset:%d,lastSig:0x%x,delta:%d,newSig:0x%x}\n",
       cycle, VecInit(hit_vec).asUInt, hit_way, lastOffset, sig, delta, new_sig(SPPParams.signatureBits - 1, 0))
@@ -246,7 +258,6 @@ class SignaturePathPrefetcher(params: InclusiveCacheParameters)
       cur_sig := sig
       state := s_pf_1
     }.otherwise {
-      miss_q.ready := true.B
       state := s_idle
     }
 
